@@ -1,16 +1,6 @@
-name: Docker Image CI Alpine
+name: Docker Image CI Alpine Old
 
-on:
-  push:
-    branches: [main]
-  schedule:
-    - cron: "0 2 * * 0"
-  workflow_dispatch:
-    inputs:
-      name:
-        description: "Reason"
-        required: true
-        default: "Why??"
+on: workflow_dispatch
 
 # 同一 ref 上的运行互斥，push 触发时取消上一次仍在执行的计划任务，避免资源浪费
 concurrency:
@@ -29,27 +19,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        array:
+        # 版本表只在此处定义，merge job 用 YAML alias 引用（Actions 自 2025-08 支持 anchor/alias）
+        array: &versions
           [
             {
-              php_version: "8.2",
-              upstream_version: "8.2-fpm-nginx-alpine",
-              tag: "8.2-alpine"
-            },
-            {
-              php_version: "8.3",
-              upstream_version: "8.3-fpm-nginx-alpine",
-              tag: "8.3-alpine"
-            },
-            {
-              php_version: "8.4",
-              upstream_version: "8.4-fpm-nginx-alpine",
-              tag: "8.4-alpine"
-            },
-            {
-              php_version: "8.5",
-              upstream_version: "8.5-fpm-nginx-alpine",
-              tag: "8.5-alpine"
+              php_version: "7.4",
+              upstream_version: "7.4-fpm-nginx-alpine",
+              tag: "7.4-alpine"
             },
           ]
         arch: [amd64, arm64]
@@ -77,7 +53,7 @@ jobs:
           push: true
           context: .
           platforms: linux/${{ matrix.arch }}
-          file: "Dockerfile.alpine.template"
+          file: "Dockerfile.alpine-old.template"
           tags: |
             davyinsa/docker-nginx-php:${{ matrix.array.tag }}-${{ matrix.arch }}
             registry.cn-hangzhou.aliyuncs.com/davyin/nginx-php:${{ matrix.array.tag }}-${{ matrix.arch }}
@@ -95,13 +71,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        array:
-          [
-            { tag: "8.2-alpine" },
-            { tag: "8.3-alpine" },
-            { tag: "8.4-alpine" },
-            { tag: "8.5-alpine" },
-          ]
+        # 直接复用 build 的版本表，避免加 PHP 版本时两处不同步（漏改会静默不合成正式 tag）
+        array: *versions
 
     steps:
       - name: Login to Docker Hub
