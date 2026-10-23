@@ -15,6 +15,10 @@
 #   - drush 8.4.x is the branch that runs on PHP 7.4 (drush 11+ needs 8.x).
 #   - The base image predates the s6 user-bundles.d layout; the entrypoint
 #     scripts already probe both locations.
+#   - PHP 7.4 is EOL and will never see 7.4.34, so the engine is recompiled
+#     from the base image's source tarball with the upstream EOL mitigation
+#     for CVE-2026-109618 / CVE-2026-109619 (see the security block below).
+#     This adds roughly two minutes of compile time to each build.
 #
 # Base: serversideup/php (official PHP images, s6-overlay, install-php-extensions).
 ARG PHP_VERSION
@@ -100,6 +104,102 @@ RUN for i in 1 2 3; do \
             zstd && break || { echo "apk add failed, retry $i/3"; sleep 10; }; \
     done && \
     rm -rf /var/cache/apk/*
+
+## PHP 7.4 security: rebuild the engine with the upstream EOL mitigation.
+##
+## PHP 7.4 went EOL before CVE-2026-109618 / CVE-2026-109619 could ship, so
+## php.net will never publish 7.4.34. The mitigation is php-src commit
+## 712e60f9 ("Avoid state corruption via bailout"): immediate exit on OOM,
+## multipart body-part limit, session upload-progress callback disabled.
+##
+## The base image keeps the 7.4.33 tarball in /usr/src/php.tar.xz, so the
+## engine is recompiled here with the patch applied. Configure flags are the
+## base image's own (php -i => "Configure Command"), which keeps the rebuilt
+## binaries drop-in compatible with the extensions serversideup installed.
+## Other extensions are ABI-compatible: the patch changes no struct layout.
+COPY security/php74/712e60f9edfd03f0960fc4fc3c2c375f42b90aa2.patch /usr/local/src/
+RUN set -eux; \
+    ## Skip if a future base image ever ships a patched engine.
+    if php -r 'exit(ini_get("max_multipart_body_parts") === false ? 1 : 0);'; then \
+        echo "base image already carries the PHP 7.4 EOL mitigation, skipping rebuild"; \
+    else \
+        apk add --no-cache --virtual .php-build-deps \
+            $PHPIZE_DEPS \
+            argon2-dev \
+            coreutils \
+            curl-dev \
+            gnu-libiconv-dev \
+            libsodium-dev \
+            libxml2-dev \
+            linux-headers \
+            oniguruma-dev \
+            openssl-dev \
+            readline-dev \
+            sqlite-dev; \
+        ## Same iconv shim the official php Dockerfile uses; -f because the
+        ## base image already carries libcharset.h/localcharset.h.
+        rm -vf /usr/include/iconv.h; \
+        ln -sfv /usr/include/gnu-libiconv/*.h /usr/include/; \
+        export CFLAGS="$PHP_CFLAGS" CPPFLAGS="$PHP_CPPFLAGS" LDFLAGS="$PHP_LDFLAGS"; \
+        docker-php-source extract; \
+        cd /usr/src/php; \
+        patch -p1 --batch < /usr/local/src/712e60f9edfd03f0960fc4fc3c2c375f42b90aa2.patch; \
+        ./configure \
+            --build="$(dpkg-architecture --query DEB_BUILD_GNU_TYPE)" \
+            --with-config-file-path="$PHP_INI_DIR" \
+            --with-config-file-scan-dir="$PHP_INI_DIR/conf.d" \
+            --enable-option-checking=fatal \
+            --with-mhash \
+            --with-pic \
+            --enable-ftp \
+            --enable-mbstring \
+            --enable-mysqlnd \
+            --with-password-argon2 \
+            --with-sodium=shared \
+            --with-pdo-sqlite=/usr \
+            --with-sqlite3=/usr \
+            --with-curl \
+            --with-iconv=/usr \
+            --with-openssl \
+            --with-readline \
+            --with-zlib \
+            --disable-phpdbg \
+            --with-pear \
+            --disable-cgi \
+            --enable-fpm \
+            --with-fpm-user=www-data \
+            --with-fpm-group=www-data; \
+        make -j"$(nproc)"; \
+        find -type f -name '*.a' -delete; \
+        make install; \
+        find /usr/local -type f -perm '/0111' -exec sh -euxc 'strip --strip-all "$@" || :' -- '{}' +; \
+        make clean; \
+        cd /; \
+        docker-php-source delete; \
+        ## The base image wiped /var/cache/apk, so plain `apk del` cannot
+        ## fetch a world index; --no-cache keeps it in memory instead.
+        apk --no-cache del .php-build-deps; \
+    fi; \
+    rm -f /usr/local/src/712e60f9edfd03f0960fc4fc3c2c375f42b90aa2.patch
+
+## Fail the build unless the mitigation is demonstrably active.
+COPY security/php74/verify.sh /usr/local/bin/verify-php74-cve
+RUN chmod +x /usr/local/bin/verify-php74-cve && sh /usr/local/bin/verify-php74-cve
+
+## Runtime identification. PHP 7.4.33 keeps its version string (no 7.4.34 will
+## ever exist), so expose the mitigation through an OCI label, a marker file
+## and the verify script. The decisive marker is max_multipart_body_parts,
+## which only the patched engine defines.
+LABEL com.davyin.php74-cve.upstream-commit="712e60f9edfd03f0960fc4fc3c2c375f42b90aa2" \
+      com.davyin.php74-cve.cves="CVE-2026-109618,CVE-2026-109619"
+
+RUN mkdir -p /usr/local/share/php74-cve && \
+    printf '%s\n' \
+        'php-src commit: 712e60f9edfd03f0960fc4fc3c2c375f42b90aa2' \
+        'CVE: CVE-2026-109618 CVE-2026-109619' \
+        'check: verify-php74-cve' \
+        'marker: ini_get("max_multipart_body_parts") === "-1"' \
+        > /usr/local/share/php74-cve/upstream.txt
 
 ## PHP extensions missing from the base image
 ## (zip/redis/pdo_pgsql/sodium/opcache are already provided by serversideup)

@@ -5,9 +5,12 @@
 # Usage:
 #   ./scripts/test-local-build.sh [PHP_VERSION] [VARIANT] [UPSTREAM_VERSION]
 #
-#   PHP_VERSION      8.3 | 8.4 | 8.5            (default: 8.4)
-#   VARIANT          alpine | debian            (default: alpine)
+#   PHP_VERSION      7.4 | 8.3 | 8.4 | 8.5      (default: 8.4)
+#   VARIANT          alpine | debian | alpine-old (default: alpine)
 #   UPSTREAM_VERSION e.g. 8.4-fpm-nginx-alpine  (default: derived from variant)
+#
+# PHP 7.4 needs Drupal 9 code (Drupal 10/11 require PHP >= 8.1), so
+# DRUPAL_IMAGE defaults to drupal:9-apache for 7.4 builds.
 #
 # Env overrides:
 #   PLATFORM     build/run platform      (default: linux/amd64)
@@ -27,15 +30,20 @@ PHP_VERSION="${1:-8.4}"
 VARIANT="${2:-alpine}"
 UPSTREAM_VERSION="${3:-}"
 PLATFORM="${PLATFORM:-linux/amd64}"
-DRUPAL_IMAGE="${DRUPAL_IMAGE:-drupal:11-apache}"
+if [ "$PHP_VERSION" = "7.4" ]; then
+    DEFAULT_DRUPAL_IMAGE="drupal:9-apache"
+else
+    DEFAULT_DRUPAL_IMAGE="drupal:11-apache"
+fi
+DRUPAL_IMAGE="${DRUPAL_IMAGE:-$DEFAULT_DRUPAL_IMAGE}"
 PORT="${PORT:-8080}"
 WAIT_SECONDS="${WAIT_SECONDS:-240}"
 
 if [ -z "$UPSTREAM_VERSION" ]; then
     case "$VARIANT" in
-        alpine) UPSTREAM_VERSION="${PHP_VERSION}-fpm-nginx-alpine" ;;
+        alpine|alpine-old) UPSTREAM_VERSION="${PHP_VERSION}-fpm-nginx-alpine" ;;
         debian) UPSTREAM_VERSION="${PHP_VERSION}-fpm-nginx" ;;
-        *) echo "ERROR: unknown variant '$VARIANT' (expected alpine|debian)" >&2; exit 1 ;;
+        *) echo "ERROR: unknown variant '$VARIANT' (expected alpine|debian|alpine-old)" >&2; exit 1 ;;
     esac
 fi
 

@@ -35,6 +35,42 @@ docker build -f Dockerfile.debian.template \
   -t your-image-name:8.4-debian .
 ```
 
+### Legacy PHP 7.4 variant
+```bash
+docker build -f Dockerfile.alpine-old.template \
+  --build-arg PHP_VERSION=7.4 \
+  --build-arg UPSTREAM_VERSION=7.4-fpm-nginx-alpine \
+  -t your-image-name:7.4-alpine .
+```
+（CI 见 `docker-image-old.yml`，仅手动触发。）
+
+### PHP 7.4 安全补丁（CVE-2026-109618 / CVE-2026-109619）
+PHP 7.4 在修复可用前就已 EOL，php.net 不会发布 7.4.34，所以旧镜像在构建时
+**用基础镜像自带的 `/usr/src/php.tar.xz` 重新编译 7.4.33**，并打上游 EOL 缓解补丁：
+
+- 补丁：`security/php74/712e60f9edfd03f0960fc4fc3c2c375f42b90aa2.patch`
+  （php-src commit `712e60f9`，"Avoid state corruption via bailout"）
+- 行为变化：OOM 立即 `_exit(1)` 且不执行 shutdown 函数；新增
+  `max_multipart_body_parts`（默认 -1 = `max_input_vars + max_file_uploads`）；
+  原生 session upload progress 回调被禁用
+- configure 参数逐字复制基础镜像的 `Configure Command`（`php -i` 可查），
+  保证新二进制与 serversideup 预装的扩展 ABI 兼容（补丁不改结构体布局）
+- `security/php74/verify.sh` 在构建期验证：INI 项存在、OOM 退出码 1 且无
+  shutdown 回调（未打补丁的 7.4.33 是退出码 255 + 回调照跑）、`php-fpm` 版本
+- 升级/更换上游镜像时若发现基础镜像已自带该 INI 项，构建会自动跳过重编译
+
+运行时如何确认打了补丁（`php -v` 永远是 `7.4.33`，不能作为依据）：
+```bash
+# 1) 决定性判据：只有补丁引擎才有这个 INI 项（-1 = 自动上限）
+docker exec <container> php -r 'var_dump(ini_get("max_multipart_body_parts"));'
+# 2) 内置校验脚本（INI 项 + OOM 退出码 1 且不跑 shutdown 回调 + php-fpm 版本）
+docker exec <container> verify-php74-cve
+# 3) 镜像元数据 / 标记文件
+docker inspect -f '{{ index .Config.Labels "com.davyin.php74-cve.upstream-commit" }}' <image>
+docker exec <container> cat /usr/local/share/php74-cve/upstream.txt
+```
+注意：更新镜像后必须重建容器，`docker restart` 不会换运行时。
+
 ## Architecture
 
 ### Base Image (serversideup/php)
